@@ -83,21 +83,16 @@ class SwitchController:
         return self.entry.options.get(f"button{button}", {})
 
     @staticmethod
-    def _event_type_changed(event: Event) -> str | None:
-        old_state = event.data["old_state"]
+    def _event_type_from(event: Event) -> str | None:
         new_state = event.data["new_state"]
         if new_state is None:
             return None
-        new_type = new_state.attributes.get("event_type")
-        old_type = old_state.attributes.get("event_type") if old_state else None
-        if new_type is None or new_type == old_type:
-            return None
-        return new_type
+        return new_state.attributes.get("event_type")
 
     def _make_matter_listener(self, button: int):
         @callback
         def _listener(event: Event) -> None:
-            event_type = self._event_type_changed(event)
+            event_type = self._event_type_from(event)
             if event_type is None:
                 return
             action = MATTER_EVENT_MAP.get(event_type)
@@ -108,7 +103,7 @@ class SwitchController:
 
     @callback
     def _zigbee_listener(self, event: Event) -> None:
-        event_type = self._event_type_changed(event)
+        event_type = self._event_type_from(event)
         if event_type is None:
             return
 
