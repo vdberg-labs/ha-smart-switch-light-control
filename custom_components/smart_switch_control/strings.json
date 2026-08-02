@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "protocol": "Protocol"
+        }
+      },
+      "matter": {
+        "data": {
+          "button1_entity": "Button 1 event entity",
+          "button2_entity": "Button 2 event entity"
+        }
+      },
+      "zigbee": {
+        "data": {
+          "action_entity": "Action event entity"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "button1_target": "Button 1: lights/areas/labels",
+          "button1_tap_toggle": "Button 1: tap to toggle",
+          "button1_hold_ramp": "Button 1: hold to change brightness",
+          "button1_double_tap_color": "Button 1: double tap to change color",
+          "button2_target": "Button 2: lights/areas/labels",
+          "button2_tap_toggle": "Button 2: tap to toggle",
+          "button2_hold_ramp": "Button 2: hold to change brightness",
+          "button2_double_tap_color": "Button 2: double tap to change color"
+        }
+      }
+    }
+  }
+}
