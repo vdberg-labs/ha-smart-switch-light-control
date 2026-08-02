@@ -26,9 +26,6 @@ def _schema_for_button(prefix: str, defaults: dict) -> dict:
 
 
 class SmartSwitchOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
-
     async def async_step_init(self, user_input: dict | None = None):
         if user_input is not None:
             button1 = {key: user_input[f"button1_{key}"] for key in BUTTON_OPTION_KEYS}
