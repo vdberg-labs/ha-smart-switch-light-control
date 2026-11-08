@@ -4,12 +4,12 @@
 
 <h1 align="center">Smart Switch Light Control</h1>
 
-Home Assistant add-on that allows you to control lights using a pulse button.
+Home Assistant app that allows you to control lights using a pulse button.
 Tap to toggle, hold to change brightness and double tap to change temperature.
 
 ## Install
 
-In Home Assistant, go to Settings > Add-ons > Add-on Store > the three-dot menu > Repositories and add
+In Home Assistant, go to Settings > Apps > App Store > the three-dot menu > Repositories and add
 this repository's URL. Then install and start "Smart Switch Light Control".
 
 See [DOCS.md](smart_switch_light_control/DOCS.md) for configuration.
