@@ -1,8 +1,7 @@
 # Smart Switch Light Control
 
-Open this add-on's web UI (or **Smart Switch** in the sidebar, if you enable it on the Info tab) and add one
-entry per physical switch.
+Open this add-on's web UI (or **Smart Switch** in the sidebar, if you enable it on the Info tab).
 
-For each switch, pick the protocol and its event entities. Matter switches have one event entity per
-button; Zigbee switches have one combined action entity. Then choose the lights, areas and labels each
-button controls, and which gestures it responds to. Saving applies the changes immediately.
+Choose a switch and press **Add switch**; each switch can only be added once. Turn on the buttons you want
+this add-on to handle, then pick their gestures and search for the lights, areas and labels each one
+controls. Saving applies the changes immediately.

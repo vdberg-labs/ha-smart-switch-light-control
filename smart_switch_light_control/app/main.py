@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,6 +50,9 @@ RAMP_UPDATE_INTERVAL_S = 0.1
 
 TARGET_KEYS = ("entity_id", "area_id", "label_id")
 
+# Zigbee2MQTT devices appear in Home Assistant through the MQTT integration.
+PLATFORM_PROTOCOLS = {"matter": "matter", "mqtt": "zigbee"}
+
 
 @dataclass
 class Button:
@@ -65,20 +69,72 @@ class Button:
 
 @dataclass
 class Switch:
-    protocol: str
-    entities: list[str]
     buttons: dict[int, Button] = field(default_factory=dict)
+    # (button number or None for a combined action entity, entity_id)
+    subscriptions: list[tuple[int | None, str]] = field(default_factory=list)
 
 
-def load_switches(config: list[dict]) -> list[Switch]:
-    switches: list[Switch] = []
-    for index, raw in enumerate(config, start=1):
-        protocol = raw["protocol"]
-        keys = ("button1_entity", "button2_entity") if protocol == "matter" else ("action_entity",)
-        entities = [raw.get(key) for key in keys]
-        if not all(entities):
-            _LOGGER.error("Switch %d (%s) needs: %s - skipping it", index, protocol, ", ".join(keys))
+def natural_key(text: str) -> list:
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
+
+
+def find_devices(entities: list[dict], device_entries: list[dict]) -> dict[str, dict]:
+    """Group event entities by device, so a switch can be picked as one thing."""
+    grouped: dict[str, list[dict]] = {}
+    for entity in entities:
+        if not entity["entity_id"].startswith("event.") or entity.get("disabled_by") or not entity.get("device_id"):
             continue
+        if entity.get("platform") == "mqtt" and "action" not in entity["entity_id"]:
+            continue
+        if entity.get("platform") in PLATFORM_PROTOCOLS:
+            grouped.setdefault(entity["device_id"], []).append(entity)
+
+    devices: dict[str, dict] = {}
+    for entry in device_entries:
+        found = grouped.get(entry["id"])
+        if not found:
+            continue
+        found.sort(key=lambda e: natural_key(e.get("unique_id") or e["entity_id"]))
+        protocol = PLATFORM_PROTOCOLS[found[0]["platform"]]
+        devices[entry["id"]] = {
+            "id": entry["id"],
+            "name": entry.get("name_by_user") or entry.get("name") or entry["id"],
+            "model": entry.get("model") or "",
+            "protocol": protocol,
+            "entities": [e["entity_id"] for e in found],
+            "buttons": 2 if protocol == "zigbee" else min(len(found), 2),
+        }
+    return devices
+
+
+def normalize(config: list[dict], devices: dict[str, dict]) -> list[dict]:
+    """Give entries saved before devices were tracked their device_id."""
+    owners = {entity: device_id for device_id, device in devices.items() for entity in device["entities"]}
+    normalized = []
+    for raw in config:
+        device_id = raw.get("device_id") or owners.get(raw.get("button1_entity") or raw.get("action_entity"))
+        if device_id is None:
+            _LOGGER.error("Dropping a saved switch whose device no longer exists: %s", raw)
+            continue
+        legacy = {"button1_enabled": True, "button2_enabled": True} if "device_id" not in raw else {}
+        normalized.append({**legacy, **raw, "device_id": device_id})
+    return normalized
+
+
+def load_switches(config: list[dict], devices: dict[str, dict]) -> list[Switch]:
+    switches: list[Switch] = []
+    for raw in config:
+        device = devices.get(raw["device_id"])
+        if device is None:
+            _LOGGER.error("Switch device %s was not found - skipping it", raw["device_id"])
+            continue
+        enabled = [n for n in range(1, device["buttons"] + 1) if raw.get(f"button{n}_enabled", False)]
+        if not enabled:
+            continue
+        if device["protocol"] == "matter":
+            subscriptions = [(number, device["entities"][number - 1]) for number in enabled]
+        else:
+            subscriptions = [(None, device["entities"][0])]
         buttons = {
             number: Button(
                 target={k: v for k, v in raw.get(f"button{number}_targets", {}).items() if k in TARGET_KEYS and v},
@@ -86,16 +142,17 @@ def load_switches(config: list[dict]) -> list[Switch]:
                 hold_ramp=raw.get(f"button{number}_hold_ramp", True),
                 double_tap_color=raw.get(f"button{number}_double_tap_color", True),
             )
-            for number in (1, 2)
+            for number in enabled
         }
-        switches.append(Switch(protocol, entities, buttons))
+        switches.append(Switch(buttons, subscriptions))
     return switches
 
 
 class Controller:
-    def __init__(self, ws: aiohttp.ClientWebSocketResponse, switches: list[Switch]) -> None:
+    def __init__(self, ws: aiohttp.ClientWebSocketResponse, config: list[dict]) -> None:
         self._ws = ws
-        self._switches = switches
+        self._config = config
+        self._switches: list[Switch] = []
         self._next_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._subscriptions: dict[int, tuple[Switch, int | None]] = {}
@@ -130,8 +187,16 @@ class Controller:
         result = await self._request({"type": "extract_from_target", "target": button.target})
         return sorted(e for e in result["referenced_entities"] if e.startswith("light."))
 
+    async def devices(self) -> dict[str, dict]:
+        entities, device_entries = await asyncio.gather(
+            self._request({"type": "config/entity_registry/list"}),
+            self._request({"type": "config/device_registry/list"}),
+        )
+        return find_devices(entities, device_entries)
+
     async def registry(self) -> dict:
-        states, areas, labels = await asyncio.gather(
+        devices, states, areas, labels = await asyncio.gather(
+            self.devices(),
             self._request({"type": "get_states"}),
             self._request({"type": "config/area_registry/list"}),
             self._request({"type": "config/label_registry/list"}),
@@ -146,26 +211,13 @@ class Controller:
             return sorted(({"id": e[key], "name": e["name"]} for e in entries), key=lambda item: item["name"].lower())
 
         return {
+            "devices": sorted(devices.values(), key=lambda device: device["name"].lower()),
             "lights": named("light"),
-            "events": named("event"),
             "areas": listed(areas, "area_id"),
             "labels": listed(labels, "label_id"),
         }
 
-    async def run(self) -> None:
-        for switch in self._switches:
-            for index, entity in enumerate(switch.entities, start=1):
-                msg_id = self._new_id()
-                self._subscriptions[msg_id] = (switch, index if switch.protocol == "matter" else None)
-                await self._ws.send_json(
-                    {
-                        "id": msg_id,
-                        "type": "subscribe_trigger",
-                        "trigger": {"platform": "state", "entity_id": entity},
-                    }
-                )
-        _LOGGER.info("Listening to %d switch(es)", len(self._switches))
-
+    async def _read(self) -> None:
         try:
             async for message in self._ws:
                 if message.type != aiohttp.WSMsgType.TEXT:
@@ -173,7 +225,30 @@ class Controller:
                 self._dispatch(message.json())
         finally:
             for future in self._pending.values():
-                future.cancel()
+                if not future.done():
+                    future.set_exception(RuntimeError("Connection to Home Assistant closed"))
+            self._pending.clear()
+
+    async def run(self) -> None:
+        reader = asyncio.create_task(self._read())
+        try:
+            devices = await self.devices()
+            self._switches = load_switches(normalize(self._config, devices), devices)
+            for switch in self._switches:
+                for number, entity in switch.subscriptions:
+                    msg_id = self._new_id()
+                    self._subscriptions[msg_id] = (switch, number)
+                    await self._ws.send_json(
+                        {
+                            "id": msg_id,
+                            "type": "subscribe_trigger",
+                            "trigger": {"platform": "state", "entity_id": entity},
+                        }
+                    )
+            _LOGGER.info("Listening to %d switch(es)", len(self._switches))
+            await reader
+        finally:
+            reader.cancel()
             for task in list(self._tasks):
                 task.cancel()
             for switch in self._switches:
@@ -212,8 +287,9 @@ class Controller:
         for button_number, prefix in ZIGBEE_CHANNEL_PREFIXES.items():
             if event_type.startswith(f"{prefix}_"):
                 action = ZIGBEE_EVENT_SUFFIX_MAP.get(event_type[len(prefix) + 1 :])
-                if action is not None:
-                    self._handle(switch.buttons[button_number], action)
+                button = switch.buttons.get(button_number)
+                if action is not None and button is not None:
+                    self._handle(button, action)
                 return
 
     def _spawn(self, coroutine) -> None:
@@ -303,8 +379,15 @@ async def authenticate(ws: aiohttp.ClientWebSocketResponse, token: str) -> None:
 def valid_config(config: object) -> bool:
     if not isinstance(config, list):
         return False
+    seen: set[str] = set()
     for raw in config:
-        if not isinstance(raw, dict) or raw.get("protocol") not in ("matter", "zigbee"):
+        if not isinstance(raw, dict):
+            return False
+        device_id = raw.get("device_id")
+        if not isinstance(device_id, str) or not device_id or device_id in seen:
+            return False
+        seen.add(device_id)
+        if not isinstance(raw.get("name", ""), str):
             return False
         for number in (1, 2):
             target = raw.get(f"button{number}_targets", {})
@@ -340,7 +423,12 @@ class App:
             return web.json_response({"error": str(err)}, status=502)
 
     async def _get_switches(self, _request: web.Request) -> web.Response:
-        return web.json_response(self.config)
+        if self.controller is None:
+            return web.json_response({"error": "Not connected to Home Assistant"}, status=503)
+        try:
+            return web.json_response(normalize(self.config, await self.controller.devices()))
+        except RuntimeError as err:
+            return web.json_response({"error": str(err)}, status=502)
 
     async def _put_switches(self, request: web.Request) -> web.Response:
         try:
@@ -348,7 +436,7 @@ class App:
         except ValueError:
             config = None
         if not valid_config(config):
-            return web.json_response({"error": "Invalid configuration"}, status=400)
+            return web.json_response({"error": "Invalid configuration, or the same switch was added twice"}, status=400)
 
         temp = CONFIG_PATH.with_suffix(".tmp")
         temp.write_text(json.dumps(config), "utf8")
@@ -379,7 +467,7 @@ class App:
                         await authenticate(ws, token)
                         _LOGGER.info("Connected to Home Assistant")
                         self.ws = ws
-                        self.controller = Controller(ws, load_switches(self.config))
+                        self.controller = Controller(ws, self.config)
                         await self.controller.run()
                     if not self.reloading:
                         _LOGGER.warning("Connection to Home Assistant closed")
