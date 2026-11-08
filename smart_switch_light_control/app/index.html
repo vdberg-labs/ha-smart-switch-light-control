@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Switch Light Control</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f5f5f5; --card: #fff; --text: #1c1c1c; --muted: #6b6b6b; --line: #d9d9d9; --accent: #03a9f4; --danger: #c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --card: #1e1e1e; --text: #e6e6e6; --muted: #9b9b9b; --line: #383838; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 16px; }
+  h2 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  label.field { display: block; margin-top: 10px; color: var(--muted); font-size: 13px; }
+  select, input[type=search] { display: block; width: 100%; margin-top: 4px; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; }
+  details { border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
+  summary { padding: 8px 10px; cursor: pointer; }
+  .list { max-height: 220px; overflow-y: auto; padding: 0 10px 8px; }
+  .opt { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+  .flags { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 10px; }
+  button { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.remove { color: var(--danger); }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #status { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Smart Switch Light Control</h1>
+  <div id="switches"></div>
+  <div class="actions">
+    <button id="add">Add switch</button>
+    <button id="save" class="primary">Save</button>
+    <span id="status" role="status"></span>
+  </div>
+</main>
+<script>
+const TARGET_GROUPS = [["entity_id", "Lights", "lights"], ["area_id", "Areas", "areas"], ["label_id", "Labels", "labels"]];
+const FLAGS = [["tap_toggle", "Tap to toggle"], ["hold_ramp", "Hold to change brightness"], ["double_tap_color", "Double tap to change temperature"]];
+const el = (tag, props = {}, ...children) => { const node = Object.assign(document.createElement(tag), props); node.append(...children); return node; };
+const status = text => document.getElementById("status").textContent = text;
+let registry, switches;
+
+function entitySelect(sw, key, title) {
+  const select = el("select", { onchange: () => sw[key] = select.value });
+  select.append(el("option", { value: "", textContent: "Choose an event entity" }));
+  const ids = new Set(registry.events.map(e => e.id));
+  if (sw[key] && !ids.has(sw[key])) select.append(el("option", { value: sw[key], textContent: sw[key] + " (not found)" }));
+  for (const e of registry.events) select.append(el("option", { value: e.id, textContent: `${e.name} (${e.id})` }));
+  select.value = sw[key] || "";
+  return el("label", { className: "field", textContent: title }, select);
+}
+
+function targetPicker(target, key, title, items) {
+  const selected = target[key] ||= [];
+  const summary = el("summary");
+  const refresh = () => summary.textContent = `${title} (${selected.length} selected)`;
+  refresh();
+  const list = el("div", { className: "list" });
+  const known = new Set(items.map(i => i.id));
+  const all = [...items, ...selected.filter(id => !known.has(id)).map(id => ({ id, name: id + " (not found)" }))];
+  const rows = all.map(item => {
+    const box = el("input", { type: "checkbox", checked: selected.includes(item.id), onchange: () => {
+      const at = selected.indexOf(item.id);
+      if (box.checked && at < 0) selected.push(item.id);
+      if (!box.checked && at >= 0) selected.splice(at, 1);
+      refresh();
+    } });
+    const row = el("label", { className: "opt" }, box, el("span", { textContent: item.name }));
+    row.dataset.search = (item.name + " " + item.id).toLowerCase();
+    return row;
+  });
+  const search = el("input", { type: "search", placeholder: "Search", "aria-label": `Search ${title}`, oninput: () => {
+    const q = search.value.toLowerCase();
+    for (const row of rows) row.hidden = !row.dataset.search.includes(q);
+    for (const row of rows) row.style.display = row.hidden ? "none" : "";
+  } });
+  list.append(search, ...rows);
+  return el("details", {}, summary, list);
+}
+
+function buttonSection(sw, number) {
+  const targetKey = `button${number}_targets`;
+  const target = sw[targetKey] ||= {};
+  const section = el("div", {}, el("h2", { textContent: `Button ${number}` }));
+  for (const [key, title, source] of TARGET_GROUPS) section.append(targetPicker(target, key, title, registry[source]));
+  const flags = el("div", { className: "flags" });
+  for (const [key, title] of FLAGS) {
+    const name = `button${number}_${key}`;
+    const box = el("input", { type: "checkbox", checked: sw[name] !== false, onchange: () => sw[name] = box.checked });
+    flags.append(el("label", { className: "opt" }, box, el("span", { textContent: title })));
+  }
+  section.append(flags);
+  return section;
+}
+
+function render() {
+  const host = document.getElementById("switches");
+  host.replaceChildren(...switches.map((sw, index) => {
+    const protocol = el("select", { onchange: () => { sw.protocol = protocol.value; render(); } },
+      el("option", { value: "matter", textContent: "Matter" }), el("option", { value: "zigbee", textContent: "Zigbee" }));
+    protocol.value = sw.protocol;
+    const remove = el("button", { className: "remove", textContent: "Remove", onclick: () => { switches.splice(index, 1); render(); } });
+    const card = el("section", { className: "card" },
+      el("div", { className: "head" }, el("strong", { textContent: `Switch ${index + 1}` }), remove),
+      el("label", { className: "field", textContent: "Protocol" }, protocol));
+    if (sw.protocol === "matter") card.append(entitySelect(sw, "button1_entity", "Button 1 event entity"), entitySelect(sw, "button2_entity", "Button 2 event entity"));
+    else card.append(entitySelect(sw, "action_entity", "Action event entity"));
+    card.append(buttonSection(sw, 1), buttonSection(sw, 2));
+    return card;
+  }));
+}
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  return body;
+}
+
+document.getElementById("add").onclick = () => { switches.push({ protocol: "matter" }); render(); };
+document.getElementById("save").onclick = async () => {
+  const incomplete = switches.findIndex(sw => sw.protocol === "matter" ? !sw.button1_entity || !sw.button2_entity : !sw.action_entity);
+  if (incomplete >= 0) return status(`Switch ${incomplete + 1} still needs its event entities.`);
+  try {
+    await api("api/switches", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(switches) });
+    status("Saved.");
+  } catch (error) { status(`Could not save: ${error.message}`); }
+};
+
+(async () => {
+  try {
+    [registry, switches] = await Promise.all([api("api/registry"), api("api/switches")]);
+    render();
+  } catch (error) { status(`Could not load: ${error.message}`); }
+})();
+</script>
+</body>
+</html>
