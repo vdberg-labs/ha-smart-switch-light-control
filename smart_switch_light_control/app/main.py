@@ -251,6 +251,8 @@ class Controller:
                             "trigger": {"platform": "state", "entity_id": entity},
                         }
                     )
+            for switch in self._switches:
+                _LOGGER.info("Listening to %s: %s", switch.name, ", ".join(e for _, e in switch.subscriptions))
             _LOGGER.info("Listening to %d switch(es)", len(self._switches))
             await reader
         finally:
