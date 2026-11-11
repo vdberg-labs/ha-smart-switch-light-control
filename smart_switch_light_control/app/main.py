@@ -69,6 +69,7 @@ class Button:
 
 @dataclass
 class Switch:
+    name: str
     buttons: dict[int, Button] = field(default_factory=dict)
     # (button number or None for a combined action entity, entity_id)
     subscriptions: list[tuple[int | None, str]] = field(default_factory=list)
@@ -128,8 +129,10 @@ def load_switches(config: list[dict], devices: dict[str, dict]) -> list[Switch]:
         if device is None:
             _LOGGER.error("Switch device %s was not found - skipping it", raw["device_id"])
             continue
+        name = raw.get("name") or device["name"]
         enabled = [n for n in range(1, device["buttons"] + 1) if raw.get(f"button{n}_enabled", False)]
         if not enabled:
+            _LOGGER.warning("%s has no buttons switched on - ignoring it", name)
             continue
         if device["protocol"] == "matter":
             subscriptions = [(number, device["entities"][number - 1]) for number in enabled]
@@ -144,7 +147,10 @@ def load_switches(config: list[dict], devices: dict[str, dict]) -> list[Switch]:
             )
             for number in enabled
         }
-        switches.append(Switch(buttons, subscriptions))
+        for number, button in buttons.items():
+            if not button.target:
+                _LOGGER.warning("%s button %d has no lights chosen", name, number)
+        switches.append(Switch(name, buttons, subscriptions))
     return switches
 
 
@@ -282,6 +288,7 @@ class Controller:
         if number is not None:
             action = MATTER_EVENT_MAP.get(event_type)
             if action is not None:
+                _LOGGER.info("%s button %d: %s", switch.name, number, action)
                 self._handle(switch.buttons[number], action)
             return
         for button_number, prefix in ZIGBEE_CHANNEL_PREFIXES.items():
@@ -289,6 +296,7 @@ class Controller:
                 action = ZIGBEE_EVENT_SUFFIX_MAP.get(event_type[len(prefix) + 1 :])
                 button = switch.buttons.get(button_number)
                 if action is not None and button is not None:
+                    _LOGGER.info("%s button %d: %s", switch.name, button_number, action)
                     self._handle(button, action)
                 return
 

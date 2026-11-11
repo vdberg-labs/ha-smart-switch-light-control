@@ -1,5 +1,5 @@
 name: Smart Switch Light Control
-version: "0.3.0"
+version: "0.3.1"
 slug: smart_switch_light_control
 description: Control lights with a pulse button. Tap to toggle, hold to change brightness, double tap to change temperature.
 url: https://github.com/vdberg-labs/ha-smart-switch-light-control
