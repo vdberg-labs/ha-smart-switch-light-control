@@ -41,6 +41,12 @@
   .results button { display: flex; justify-content: space-between; gap: 8px; width: 100%; border: 0; border-radius: 0; background: none; text-align: left; }
   .results button:hover, .results button:focus-visible { background: var(--sunken); }
   .results .none { padding: 8px 12px; color: var(--muted); }
+  details.advanced { margin-top: 10px; }
+  details.advanced summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .setting { display: grid; grid-template-columns: 1fr 110px; gap: 2px 12px; align-items: center; padding: 6px 0; }
+  .setting input { width: 100%; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; }
+  .setting input:invalid { border-color: var(--danger); }
+  .setting .muted { grid-column: 1; }
   footer { display: flex; gap: 12px; align-items: center; margin-top: 4px; }
   #status { color: var(--muted); }
 </style>
@@ -54,6 +60,12 @@
 <script>
 const KINDS = [["entity_id", "Light", "lights"], ["area_id", "Area", "areas"], ["label_id", "Label", "labels"]];
 const GESTURES = [["tap_toggle", "Tap to toggle"], ["hold_ramp", "Hold to change brightness"], ["double_tap_color", "Double tap to change temperature"]];
+const RAMP_SETTINGS = [
+  ["sweep_s", "Sweep time (s)", "Time from lowest to full brightness while holding.", 0.1],
+  ["step_ms", "Update interval (ms)", "Time between brightness commands. Raise it if the lights lag behind.", 10],
+  ["transition_ms", "Transition (ms)", "Fade the lights do for each command. About the update interval gives a smooth ramp; 0 jumps.", 10],
+  ["min_pct", "Minimum brightness (%)", "Lowest brightness the ramp goes down to.", 1],
+];
 const MAX_RESULTS = 40;
 const el = (tag, props = {}, ...children) => { const node = Object.assign(document.createElement(tag), props); node.append(...children); return node; };
 const setStatus = text => document.getElementById("status").textContent = text;
@@ -99,6 +111,21 @@ function targetPicker(target) {
   return el("div", {}, chips, el("div", { className: "picker" }, search, results));
 }
 
+// Empty fields are left out of the saved config, so the app's defaults apply.
+function advancedBlock(sw, number) {
+  const settings = RAMP_SETTINGS.map(([key, title, help, step]) => {
+    const name = `button${number}_${key}`;
+    const { default: fallback, min, max } = registry.ramp_settings[key];
+    const input = el("input", { type: "number", min, max, step, value: sw[name] ?? "", placeholder: fallback, ariaLabel: title, oninput: () => {
+      if (input.value === "") delete sw[name];
+      else if (input.checkValidity()) sw[name] = Number(input.value);
+    } });
+    return el("label", { className: "setting" }, el("span", { textContent: title }), input, el("span", { className: "muted", textContent: help }));
+  });
+  const open = RAMP_SETTINGS.some(([key]) => sw[`button${number}_${key}`] !== undefined);
+  return el("details", { className: "advanced", open }, el("summary", { textContent: "Advanced" }), ...settings);
+}
+
 function buttonBlock(sw, number) {
   const enabledKey = `button${number}_enabled`;
   const block = el("div");
@@ -115,7 +142,7 @@ function buttonBlock(sw, number) {
       const box = el("input", { type: "checkbox", checked: sw[name] !== false, onchange: () => sw[name] = box.checked });
       return el("label", { className: "opt" }, box, el("span", { textContent: title }));
     });
-    section.replaceChildren(...gestures, targetPicker(sw[`button${number}_targets`] ||= {}));
+    section.replaceChildren(...gestures, targetPicker(sw[`button${number}_targets`] ||= {}), advancedBlock(sw, number));
   };
   block.append(el("label", { className: "button-row" }, el("span", { textContent: `Button ${number}` }),
     el("span", { className: "switch" }, toggle, el("span", { className: "track" }))), section);

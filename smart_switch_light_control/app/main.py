@@ -45,8 +45,13 @@ ZIGBEE_EVENT_SUFFIX_MAP = {
 }
 
 TEMP_STEPS_KELVIN = [2700, 3000, 3500, 4000, 6500]
-RAMP_PERIOD_S = 4.0
-RAMP_UPDATE_INTERVAL_S = 0.1
+# Per-button ramp settings (the web UI's Advanced section): key -> (default, minimum, maximum)
+RAMP_SETTINGS = {
+    "sweep_s": (2.0, 0.5, 30.0),  # seconds from lowest to full brightness
+    "step_ms": (300, 50, 5000),  # time between brightness commands
+    "transition_ms": (300, 0, 5000),  # fade the light does for each command
+    "min_pct": (1, 1, 50),  # lowest brightness the ramp goes to
+}
 
 TARGET_KEYS = ("entity_id", "area_id", "label_id")
 
@@ -60,6 +65,7 @@ class Button:
     tap_toggle: bool
     hold_ramp: bool
     double_tap_color: bool
+    ramp_settings: dict[str, float] = field(default_factory=lambda: {k: v[0] for k, v in RAMP_SETTINGS.items()})
     direction: int = 1
     temp_index: int = 1
     holding: bool = False
@@ -144,6 +150,7 @@ def load_switches(config: list[dict], devices: dict[str, dict]) -> list[Switch]:
                 tap_toggle=raw.get(f"button{number}_tap_toggle", True),
                 hold_ramp=raw.get(f"button{number}_hold_ramp", True),
                 double_tap_color=raw.get(f"button{number}_double_tap_color", True),
+                ramp_settings={key: raw.get(f"button{number}_{key}", default) for key, (default, _, _) in RAMP_SETTINGS.items()},
             )
             for number in enabled
         }
@@ -221,6 +228,7 @@ class Controller:
             "lights": named("light"),
             "areas": listed(areas, "area_id"),
             "labels": listed(labels, "label_id"),
+            "ramp_settings": {key: {"default": d, "min": lo, "max": hi} for key, (d, lo, hi) in RAMP_SETTINGS.items()},
         }
 
     async def _read(self) -> None:
@@ -343,20 +351,37 @@ class Controller:
     async def _start_ramp(self, button: Button) -> None:
         lights = await self._resolve_lights(button)
         start_pct = await self._current_brightness_pct(lights)
-        if not button.holding:
+        if not button.holding or not lights:
             return
+        settings = button.ramp_settings
         # Flip direction so each new hold continues the opposite way.
         button.direction = -button.direction
-        button.ramp = Ramp(start_pct=start_pct, direction=button.direction, period=RAMP_PERIOD_S)
-        button.ramp_task = asyncio.create_task(self._guarded(self._ramp_loop(button, lights)))
+        ramp = Ramp(start_pct=start_pct, direction=button.direction, period=2 * settings["sweep_s"],
+                    min_pct=settings["min_pct"])
+        button.ramp = ramp
+        button.ramp_task = asyncio.create_task(self._guarded(self._ramp_loop(button, ramp, lights)))
 
-    async def _ramp_loop(self, button: Button, lights: list[str]) -> None:
-        while button.ramp is not None:
-            await asyncio.sleep(RAMP_UPDATE_INTERVAL_S)
-            if button.ramp is None or not lights:
-                return
-            pct, _ = button.ramp.state()
-            await self._call_light("turn_on", lights, brightness_pct=pct)
+    async def _ramp_loop(self, button: Button, ramp: Ramp, lights: list[str]) -> None:
+        # Each command waits for the previous one, so a slow light can't build up a queue of them.
+        loop = asyncio.get_running_loop()
+        settings = button.ramp_settings
+        step_s = settings["step_ms"] / 1000
+        last = None
+        while button.ramp is ramp:
+            started = loop.time()
+            pct, _ = ramp.state()
+            if pct != last:
+                await self._request(
+                    {
+                        "type": "call_service",
+                        "domain": "light",
+                        "service": "turn_on",
+                        "service_data": {"brightness_pct": pct, "transition": settings["transition_ms"] / 1000},
+                        "target": {"entity_id": lights},
+                    }
+                )
+                last = pct
+            await asyncio.sleep(max(0.0, step_s - (loop.time() - started)))
 
     def _stop_ramp(self, button: Button) -> None:
         button.holding = False
@@ -405,6 +430,10 @@ def valid_config(config: object) -> bool:
                 return False
             if not all(isinstance(v, list) and all(isinstance(i, str) for i in v) for v in target.values()):
                 return False
+            for key, (_, low, high) in RAMP_SETTINGS.items():
+                value = raw.get(f"button{number}_{key}")
+                if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high):
+                    return False
     return True
 
 
